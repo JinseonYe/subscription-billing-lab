@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 class PaymentTest {
@@ -146,6 +147,13 @@ class PaymentTest {
                 assertEquals((from to to) in allowed, from.canTransitionTo(to), "$from -> $to")
             }
         }
+    }
+
+    @Test
+    fun `결제 요청을 문자열로 찍어도 빌링키가 나오지 않는다`() {
+        val text = NewPayment("SUB-1", "BK-SECRET-123", "customer-1", 9_900L, "월 구독").toString()
+
+        assertFalse(text.contains("BK-SECRET-123"), text)
     }
 
     @Test
