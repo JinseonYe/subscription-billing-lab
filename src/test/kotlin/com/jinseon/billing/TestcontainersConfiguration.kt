@@ -8,7 +8,8 @@ import org.testcontainers.utility.DockerImageName
 
 @TestConfiguration(proxyBeanMethods = false)
 class TestcontainersConfiguration {
+    // 운영 스택(MySQL 8.4)과 같은 버전으로 테스트한다.
     @Bean
     @ServiceConnection
-    fun mysqlContainer(): MySQLContainer = MySQLContainer(DockerImageName.parse("mysql:latest"))
+    fun mysqlContainer(): MySQLContainer = MySQLContainer(DockerImageName.parse("mysql:8.4"))
 }
