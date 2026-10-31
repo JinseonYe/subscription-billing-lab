@@ -150,6 +150,37 @@ class PaymentTest {
     }
 
     @Test
+    fun `거절 코드와 메시지가 컬럼 길이 이하이면 그대로 저장한다`() {
+        val payment = newPayment()
+        val message = "가".repeat(Payment.FAILURE_MESSAGE_MAX_LENGTH)
+
+        payment.fail("C".repeat(Payment.FAILURE_CODE_MAX_LENGTH), message, now)
+
+        assertEquals("C".repeat(Payment.FAILURE_CODE_MAX_LENGTH), payment.failureCode)
+        assertEquals(message, payment.failureMessage)
+    }
+
+    @Test
+    fun `거절 코드와 메시지가 컬럼보다 길면 컬럼 길이에 맞게 자른다`() {
+        val payment = newPayment()
+
+        payment.fail("C".repeat(300), "가".repeat(2_000), now)
+
+        assertEquals("C".repeat(Payment.FAILURE_CODE_MAX_LENGTH), payment.failureCode)
+        assertEquals("가".repeat(Payment.FAILURE_MESSAGE_MAX_LENGTH), payment.failureMessage)
+    }
+
+    @Test
+    fun `이모지처럼 두 칸을 차지하는 글자도 중간에서 잘리지 않고 글자 수로 센다`() {
+        val payment = newPayment()
+        val emoji = "😀"
+
+        payment.fail("CODE", emoji.repeat(600), now)
+
+        assertEquals(emoji.repeat(Payment.FAILURE_MESSAGE_MAX_LENGTH), payment.failureMessage)
+    }
+
+    @Test
     fun `결제 요청을 문자열로 찍어도 빌링키가 나오지 않는다`() {
         val text = NewPayment("SUB-1", "BK-SECRET-123", "customer-1", 9_900L, "월 구독").toString()
 

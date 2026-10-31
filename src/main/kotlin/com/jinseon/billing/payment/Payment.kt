@@ -65,8 +65,9 @@ class Payment(
         now: Instant,
     ) {
         transitionTo(PaymentStatus.FAILED)
-        this.failureCode = code
-        this.failureMessage = message
+        // 결제사가 보낸 값이라 길이를 믿을 수 없다. 컬럼보다 길면 TX2가 "Data too long"으로 실패하고 결제가 영원히 확정되지 않는다.
+        this.failureCode = code.truncate(FAILURE_CODE_MAX_LENGTH)
+        this.failureMessage = message.truncate(FAILURE_MESSAGE_MAX_LENGTH)
         this.resolvedAt = now
     }
 
@@ -78,4 +79,14 @@ class Payment(
         check(status.canTransitionTo(next)) { "허용되지 않은 상태 전이입니다: $status -> $next (orderId=$orderId)" }
         status = next
     }
+
+    companion object {
+        // V1__create_payment.sql의 failure_code, failure_message 컬럼 길이와 같아야 한다.
+        const val FAILURE_CODE_MAX_LENGTH = 100
+        const val FAILURE_MESSAGE_MAX_LENGTH = 500
+    }
 }
+
+// MySQL VARCHAR(n)은 글자(코드 포인트) 수로 센다. 이모지 같은 글자가 중간에 잘리지 않게 코드 포인트 단위로 자른다.
+private fun String.truncate(maxLength: Int): String =
+    if (codePointCount(0, length) <= maxLength) this else substring(0, offsetByCodePoints(0, maxLength))

@@ -4,7 +4,9 @@ import com.jinseon.billing.TestcontainersConfiguration
 import com.jinseon.billing.pg.PgApproveRequest
 import com.jinseon.billing.pg.PgClient
 import com.jinseon.billing.pg.PgResult
+import com.jinseon.billing.support.MutableClock
 import com.jinseon.billing.support.MutableClockConfiguration
+import com.jinseon.billing.support.warmUpMockPg
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -28,12 +30,17 @@ import kotlin.test.assertTrue
 class MockPgControllerTest(
     @Autowired private val pgClient: PgClient,
     @Autowired private val ledger: MockPgLedger,
+    @Autowired private val clock: MutableClock,
 ) {
     private val customerKey = "customer-1"
 
     @BeforeEach
     fun setUp() {
+        // 첫 요청이 느려서 500ms 타임아웃에 걸리지 않도록 먼저 데운다. 호출 기록은 바로 아래 reset이 지운다.
+        warmUpMockPg(pgClient)
         ledger.reset()
+        // 같은 컨텍스트를 쓰는 다른 테스트가 시계를 돌려놓았을 수 있다.
+        clock.set(Instant.parse("2026-01-01T00:00:00Z"))
     }
 
     private fun newRequest() = PgApproveRequest("order-${UUID.randomUUID()}", "mock-billing-key", customerKey, 9_900L, "월 구독")

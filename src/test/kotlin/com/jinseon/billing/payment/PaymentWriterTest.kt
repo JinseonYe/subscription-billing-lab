@@ -14,6 +14,11 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Import
 import org.springframework.dao.DataIntegrityViolationException
 import org.springframework.data.repository.findByIdOrNull
+import org.springframework.orm.ObjectOptimisticLockingFailureException
+import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
+import org.springframework.transaction.support.DefaultTransactionDefinition
+import org.springframework.transaction.support.TransactionTemplate
 import java.time.Instant
 import java.util.stream.Stream
 import kotlin.test.assertEquals
@@ -28,6 +33,7 @@ class PaymentWriterTest(
     @Autowired private val paymentWriter: PaymentWriter,
     @Autowired private val paymentRepository: PaymentRepository,
     @Autowired private val clock: MutableClock,
+    @Autowired private val transactionManager: PlatformTransactionManager,
 ) {
     @BeforeEach
     fun setUp() {
@@ -77,6 +83,42 @@ class PaymentWriterTest(
         val second = paymentWriter.createRequested(newPayment("SUB-2-2026-01"))
 
         assertTrue(first.orderId != second.orderId)
+    }
+
+    @Test
+    fun `두 트랜잭션이 같은 결제를 바꾸면 늦게 커밋하는 쪽이 낙관적 잠금으로 실패하고 먼저 커밋한 승인이 남는다`() {
+        val created = paymentWriter.createRequested(newPayment())
+        val outer = TransactionTemplate(transactionManager)
+        val independent =
+            TransactionTemplate(transactionManager, DefaultTransactionDefinition(TransactionDefinition.PROPAGATION_REQUIRES_NEW))
+
+        assertFailsWith<ObjectOptimisticLockingFailureException> {
+            outer.execute {
+                // 원래 흐름의 TX2가 결제를 읽어 둔다. 이 시점에는 아직 REQUESTED다.
+                val stale = assertNotNull(paymentRepository.findByIdOrNull(created.id))
+                // 그 사이 확정 잡의 트랜잭션이 승인으로 바꾸고 커밋한다.
+                independent.execute { paymentWriter.applyResult(created.id, approved) }
+                // 원래 흐름은 오래된 값을 보고 UNKNOWN으로 바꾸려 한다. version이 달라져 있어서 실패해야 한다.
+                stale.markUnknown()
+                paymentRepository.flush()
+            }
+        }
+
+        val saved = reload(created.id)
+        assertEquals(PaymentStatus.APPROVED, saved.status)
+        assertEquals("pk-1", saved.pgPaymentKey)
+    }
+
+    @Test
+    fun `결제사가 보낸 거절 코드와 메시지가 컬럼보다 길어도 잘라서 저장하고 FAILED로 확정된다`() {
+        val created = paymentWriter.createRequested(newPayment())
+
+        paymentWriter.applyResult(created.id, PgResult.Declined("C".repeat(300), "가".repeat(2_000)))
+
+        val saved = reload(created.id)
+        assertEquals(PaymentStatus.FAILED, saved.status)
+        assertEquals(Payment.FAILURE_CODE_MAX_LENGTH, saved.failureCode?.length)
+        assertEquals(Payment.FAILURE_MESSAGE_MAX_LENGTH, saved.failureMessage?.length)
     }
 
     @ParameterizedTest(name = "{0} 상태에서 {1}를 받으면 {2}가 된다")
