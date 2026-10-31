@@ -27,6 +27,7 @@
 ## 결제 코드 규칙 (가장 중요)
 - 외부 결제사 호출은 절대 @Transactional 안에서 하지 않는다.
   흐름: 결제 시도 기록 커밋 → 트랜잭션 밖 호출 → 결과 반영 트랜잭션
+- ChargeService와 PaymentStatusResolver는 트랜잭션 안에서 호출하지 않는다
 - 타임아웃과 5xx는 실패가 아니라 UNKNOWN이다.
 - 모든 승인 요청에는 결제 시도마다 고유한 멱등키를 보내고, 재전송 시 같은 값을 쓴다.
 - 금액은 원 단위 Long. Double, Float 금지
