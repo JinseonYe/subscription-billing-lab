@@ -74,6 +74,10 @@ Claude Code로 단순 구현 시간을 줄이고, 아낀 시간은 설계와 검
 ### 배운 과정
 | 개념 | Node.js/TypeScript에서는 | Kotlin/Spring에서는 | 겪은 일 |
 |---|---|---|---|
+| 트랜잭션과 외부 호출 | 트랜잭션 안에서 axios.post를 부르면 커넥션을 붙잡음 | TX1 커밋 → 트랜잭션 밖 호출 → TX2로 분리 | 바깥 트랜잭션에 합류하면 이중 청구가 날 수 있다는 리뷰 지적 → TransactionGuard 추가 |
+| @Transactional과 프록시 | queryRunner를 직접 열고 닫음 | 프록시가 감싸므로 같은 클래스 안 호출은 무시됨 | TX1, TX2를 PaymentWriter로 분리 |
+| 낙관적 락 | WHERE version = ? 를 직접 작성 | @Version이 자동으로 처리 | 늦은 TX2가 승인을 UNKNOWN으로 덮어쓰는 걸 막음. 테스트가 없다는 리뷰 지적으로 추가 |
+| 멱등 재전송 | 결제사 멱등키 헤더 | 주문번호를 멱등키로, 요청 필드는 val | 토스가 "주문 없음"이어도 FAILED가 아니라 같은 키로 재전송 |
 전체: docs/learning/
 
 ## 운영 기록 (AWS 단계)
