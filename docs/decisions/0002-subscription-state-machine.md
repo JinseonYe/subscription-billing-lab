@@ -187,9 +187,9 @@ CANCELED -> (없음, 종결)
 - **확인됨 (2단계)** Hibernate 7 `ddl-auto=validate`는 엔티티에 매핑하지 않은 생성 컬럼(`live_customer_key`)을 무시한다. 컨텍스트가 정상 기동하고 `BOOLEAN` 컬럼도 검증을 통과했다. 읽기 전용 매핑 같은 대안은 필요 없다.
 - **확인됨 (2단계)** MySQL 8.4에서 VIRTUAL 생성 컬럼에 UNIQUE를 걸 수 있어서 STORED로 바꿀 필요가 없었다. CHECK 두 개와 생성 컬럼 UNIQUE가 Testcontainers(`mysql:8.4`)에서 실제로 강제된다.
 - **확인됨 (2단계)** CHECK 위반(MySQL 에러 3819)은 Spring이 번역하지 못해 `UncategorizedSQLException`으로 나온다. UNIQUE 위반은 `DataIntegrityViolationException`(`DuplicateKeyException`)이다. 애플리케이션 코드에서 CHECK 위반을 잡을 일은 없다(엔티티 가드가 먼저 막는다). 어느 제약에 걸렸는지는 메시지의 제약 이름으로 구분한다.
-- 신청 INSERT의 UNIQUE 위반 예외가 `persist` 시점에 나는지 커밋 시점에 나는지. 같은 TX 안에서 잡으면 rollback-only 때문에 `UnexpectedRollbackException`이 날 수 있다. `ChargeService`처럼 writer TX 밖에서 잡고 새 조회로 찾는다.
-- `@Version` 충돌 예외가 flush에서 나는지 커밋에서 나는지, 프록시 밖으로 나오는 형태. 예외가 나면 `charge()`를 부르지 않아야 한다(원칙 5).
-- 커밋은 됐지만 응답이 유실된 경우, 같은 호출을 다시 하면 `AlreadyStarted`와 같은 키가 돌아오는지(테스트).
+- **확인됨 (4단계)** 신청 INSERT의 UNIQUE 위반은 `SubscriptionWriter.create` 안의 `saveAndFlush` 시점에 `DataIntegrityViolationException`으로 나오고, 그 트랜잭션은 롤백된다(기존 구독은 그대로). 같은 TX 안에서 잡으면 rollback-only 때문에 `UnexpectedRollbackException`이 날 수 있으므로, 잡는 일은 `ChargeService`처럼 writer TX 밖에서 하고 새 조회로 찾는다(5단계).
+- **확인됨 (4단계)** `@Version` 충돌은 `ObjectOptimisticLockingFailureException`이다. 명시적으로 `flush()`하면 flush에서, 아니면 커밋에서 나온다. 바깥 트랜잭션에 참여한 writer 호출은 예외 없이 정상 반환하고 충돌은 그 뒤 커밋에서 나오므로, **호출자는 writer 메서드가 반환했다는 사실이 아니라 트랜잭션이 커밋됐다는 사실로 다음 일(결제 호출)을 정해야 한다.** 이 서비스들은 자기 트랜잭션을 소유하므로(바깥 TX가 있으면 `requireNoTransaction`이 막는다) 반환은 곧 커밋이고, 예외가 나면 `charge()`를 부르지 않는다(원칙 5). 해지가 먼저 커밋되면 오래된 정보로 갱신을 시작하려던 쪽이 실패하고(다시 시도하면 예약대로 해지), 갱신이 먼저 커밋되면 해지는 실패하지만 다시 시도하면 예약으로 기록된다.
+- **확인됨 (4단계)** 갱신 시작의 응답을 잃고 같은 호출을 다시 하면 `AlreadyRenewed`가 돌아온다(주기 번호가 이미 바뀌었다). `AlreadyStarted`나 키는 돌아오지 않는다. 송신이 끝나지 않은 시도는 `pending_charge_key`에 남아 있고, 호출자가 아니라 `sync(subscriptionId)`가 그 키로 완료한다(5단계).
 - **확인됨 (1단계)** 시간대와 말일 처리(앵커 + n개월, Asia/Seoul)의 경계값 테스트. `BillingPeriodTest`가 1월 31일 앵커, 윤년, UTC와 서울의 날짜 차이를 확인한다.
 - **토스 문서 확인 (MVP 3, 테스트 키)**: 거절된 orderId를 같은 멱등키로 다시 요청하면 거절을 재생하는지, 새로 처리하는지. 거절, ABORTED, EXPIRED 뒤에 DONE이 되는 경우가 있는지.
 
