@@ -47,7 +47,7 @@ CANCELED -> (없음, 종결)
 | 16 | PAST_DUE | 재시도 거절 반영 | 예약 없음, 소진 아님 | PAST_DUE, `retry_count+1`, `next_retry_at` 갱신. 송신 비움 | MVP 4 |
 | 17 | PAST_DUE | 재시도 거절 반영 | 예약 없음, 소진 | CANCELED(RETRY_EXHAUSTED). 송신 비움 | MVP 4 |
 | 18 | PAST_DUE | 현재 시도 키의 승인이 FAILED 반영 뒤에 확인됨 | 키가 현재 시도 키 | ACTIVE (FAILED→APPROVED 복구) | MVP 4 |
-| 19 | CANCELED | 현재 시도 키의 승인 도착 | | 상태 불변, `CHARGED_AFTER_CANCEL` ERROR 로그, **예외 없음** | O |
+| 19 | CANCELED | 현재 시도 키의 승인 도착 | 이 주기의 승인이 아직 반영되지 않았음 (아래 설명) | 상태 불변, `CHARGED_AFTER_CANCEL` ERROR 로그, **예외 없음** | O |
 | 20 | CANCELED | 사용자 해지 재요청 | | `AlreadyCanceled` 결과 (중재자 판단) | O |
 | 21 | CANCELED | 그 밖의 사용자/시간 이벤트 | | 예외 (허용되지 않은 전이) | O |
 | 22 | PENDING | 기간 종료, 갱신 시작 | | 예외 (재시도 시작은 MVP 4에서 같은 규칙으로 추가) | O |
@@ -55,6 +55,7 @@ CANCELED -> (없음, 종결)
 
 - 예외와 결과를 나눈다 (중재자 판단). **허용되지 않은 전이만 예외**다. 이미 처리된 이벤트의 재실행(같은 갱신 시작이 두 번, 해지 두 번 등)은 예외가 아니라 sealed 결과(`AlreadyStarted`, `AlreadyRenewed`, `AlreadyCanceled`)로 돌려준다. 예외로 하면 MVP 4의 스케줄러가 재실행할 때마다 ERROR가 난다.
 - 19번에서 예외를 던지지 않는 이유는 ADR 0001 원칙 2와 같다. 확정된 사실은 기록하고, 충돌은 로그로 남긴다. 예외로 롤백하면 다음 실행에서 같은 예외가 영원히 반복된다.
+- 19번의 "도착"은 **이 주기의 승인이 아직 반영되지 않았을 때**만이다. 승인된 기간이 끝나 예약대로 CANCELED가 된 구독(USER_CANCELED)은 현재 시도 키의 결제가 APPROVED인 것이 정상이라 로그를 남기지 않는다. `sync()`는 이미 해지된 구독에도 불릴 수 있어서, 구분하지 않으면 정상 해지를 해지 후 승인으로 오탐한다. 행의 `period_start`가 현재 `cycle_no`의 기간 시작과 같으면 이 주기의 승인은 이미 반영된 것이다. 다르면(첫 결제 거절 뒤, 갱신 거절 뒤, PAST_DUE에서의 해지 뒤) 승인은 해지 뒤에 도착한 것이다. 스키마를 바꾸지 않고 구분할 수 있다.
 
 ## 결정 원칙
 
@@ -175,19 +176,21 @@ CANCELED -> (없음, 종결)
 1. **CANCELED로 끝난 뒤 FAILED→APPROVED가 오는 경우**는 수용한다. 첫 결제 거절과 재시도 소진은 CANCELED가 되며 되돌릴 방법이 없다. 감지는 `sync()`가 호출될 때만 하고(`CHARGED_AFTER_CANCEL` ERROR), 환불은 일어나지 않는다. **토스가 거절, ABORTED, EXPIRED 뒤에 같은 orderId를 DONE으로 바꾸는지는 미확인이다.**
 2. **변경 감지 스윕이 없다.** 잘못 FAILED가 된 결제를 먼저 찾아 고치는 코드가 없다. 재시도 직전 lookup(MVP 4)만 이 틈을 줄인다.
 3. **재시도 송신이 없다.** 갱신이 거절된 구독은 MVP 4 전까지 PAST_DUE에 머문다. 시나리오 "멈춰 있던 송신이 재시도 뒤에 도착해 한 주기에 승인 2건"은 MVP 3의 확인 결과를 보고 MVP 4에서 닫는다.
-4. **첫 결제가 끝내 확정되지 않으면**(결제사 장애 24시간 이상, `RESEND_DEADLINE_PASSED`, `RESOLVE_STUCK`) `pending_charge_key`가 계속 차 있어서 CHECK 때문에 고객은 해지도 재가입도 못 한다. 자동으로 포기하지 않는다. NotFound로 청구가 없음을 확인한 건에 한해 운영자가 `status`와 `pending_charge_key`를 **한 UPDATE에서 함께** 바꾸는 절차를 남긴다.
+4. **첫 결제가 끝내 확정되지 않으면**(결제사 장애 24시간 이상, `RESEND_DEADLINE_PASSED`, `RESOLVE_STUCK`) `pending_charge_key`가 계속 차 있어서 CHECK 때문에 고객은 해지도 재가입도 못 한다. 자동으로 포기하지 않는다. NotFound로 청구가 없음을 확인한 건에 한해 운영자가 `status`, `pending_charge_key`, `canceled_reason` 세 컬럼을 **한 UPDATE에서 함께** 바꾸는 절차를 남긴다. (`pending_charge_key`가 있는 채로 `status`만 CANCELED로 바꾸면 `chk_subscription_canceled_no_pending`에 걸리고, `canceled_reason` 없이 바꾸면 `chk_subscription_canceled_reason`에 걸린다. 2단계 테스트가 세 컬럼 UPDATE의 통과를 확인한다.)
 5. **확정 지연 중에는 이용 기간과 요금이 어긋날 수 있다.** 예를 들어 D+5 재시도가 UNKNOWN으로 남았다가 D+9에 승인되면, D+7~D+9는 이용이 막혔는데 한 달 요금을 받는다. `RENEWAL_GRACE`(24시간)를 넘긴 갱신 미확정도 같다.
 6. **환불은 일어나지 않는다.** 해지 후 승인과 한 주기 승인 2건(`DOUBLE_CHARGED` 후보)은 ERROR 로그로만 남고, 알림 연동이 없다.
 7. 기간 종료와 동기화를 부르는 스케줄러가 없다. 직접 호출한다.
-8. 앞의 한계 외에 ADR 0001의 알려진 한계(빌링키 평문 저장, 결제사 요청과 응답 원문 로그 보관, 거절 허용 목록)가 그대로 유효하다.
+8. **PAST_DUE에서 갱신 시도(`A1`)의 늦은 승인은 복구하지 않는다.** 갱신이 거절되어 PAST_DUE가 된 뒤 같은 키가 FAILED→APPROVED로 뒤집혀도 이번에는 ACTIVE로 돌리지 않는다(표 18번은 MVP 4). 상태는 그대로이고 ERROR 로그만 남는다. 돈은 받았는데 구독이 PAST_DUE에 머물 수 있다. 재시도 키(`A2` 이상)와 상관없이 갱신 시도 `A1`만으로도 열리는 경로다.
+9. 앞의 한계 외에 ADR 0001의 알려진 한계(빌링키 평문 저장, 결제사 요청과 응답 원문 로그 보관, 거절 허용 목록)가 그대로 유효하다.
 
 ## 구현 시 검증 (확인하지 못한 가정)
-- Hibernate 7 `ddl-auto=validate`가 엔티티에 매핑하지 않은 생성 컬럼을 무시하는지. 아니면 읽기 전용 매핑 등 대안을 정하고 이 ADR을 고친다.
-- MySQL 8.4에서 VIRTUAL 생성 컬럼에 UNIQUE를 걸 수 있는지(안 되면 STORED). CHECK와 생성 컬럼 UNIQUE가 Testcontainers에서 실제로 동작하는지.
+- **확인됨 (2단계)** Hibernate 7 `ddl-auto=validate`는 엔티티에 매핑하지 않은 생성 컬럼(`live_customer_key`)을 무시한다. 컨텍스트가 정상 기동하고 `BOOLEAN` 컬럼도 검증을 통과했다. 읽기 전용 매핑 같은 대안은 필요 없다.
+- **확인됨 (2단계)** MySQL 8.4에서 VIRTUAL 생성 컬럼에 UNIQUE를 걸 수 있어서 STORED로 바꿀 필요가 없었다. CHECK 두 개와 생성 컬럼 UNIQUE가 Testcontainers(`mysql:8.4`)에서 실제로 강제된다.
+- **확인됨 (2단계)** CHECK 위반(MySQL 에러 3819)은 Spring이 번역하지 못해 `UncategorizedSQLException`으로 나온다. UNIQUE 위반은 `DataIntegrityViolationException`(`DuplicateKeyException`)이다. 애플리케이션 코드에서 CHECK 위반을 잡을 일은 없다(엔티티 가드가 먼저 막는다). 어느 제약에 걸렸는지는 메시지의 제약 이름으로 구분한다.
 - 신청 INSERT의 UNIQUE 위반 예외가 `persist` 시점에 나는지 커밋 시점에 나는지. 같은 TX 안에서 잡으면 rollback-only 때문에 `UnexpectedRollbackException`이 날 수 있다. `ChargeService`처럼 writer TX 밖에서 잡고 새 조회로 찾는다.
 - `@Version` 충돌 예외가 flush에서 나는지 커밋에서 나는지, 프록시 밖으로 나오는 형태. 예외가 나면 `charge()`를 부르지 않아야 한다(원칙 5).
 - 커밋은 됐지만 응답이 유실된 경우, 같은 호출을 다시 하면 `AlreadyStarted`와 같은 키가 돌아오는지(테스트).
-- 시간대와 말일 처리(앵커 + n개월, Asia/Seoul)의 경계값 테스트. 키가 주기 번호에서 결정되므로 빠질 수 없다.
+- **확인됨 (1단계)** 시간대와 말일 처리(앵커 + n개월, Asia/Seoul)의 경계값 테스트. `BillingPeriodTest`가 1월 31일 앵커, 윤년, UTC와 서울의 날짜 차이를 확인한다.
 - **토스 문서 확인 (MVP 3, 테스트 키)**: 거절된 orderId를 같은 멱등키로 다시 요청하면 거절을 재생하는지, 새로 처리하는지. 거절, ABORTED, EXPIRED 뒤에 DONE이 되는 경우가 있는지.
 
 ## 구현 계획으로 넘기는 것
