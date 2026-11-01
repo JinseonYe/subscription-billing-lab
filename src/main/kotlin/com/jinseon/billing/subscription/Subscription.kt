@@ -147,7 +147,15 @@ class Subscription(
         fact: PaymentFact,
     ): ReflectResult {
         if (chargeKey != currentChargeKey) {
-            return if (fact is PaymentFact.Approved) ReflectResult.StaleApproval else ReflectResult.StaleKey
+            return when {
+                // 지난 주기의 승인이다. 주기는 이전 주기의 승인이 반영된 뒤에만 넘어가므로(closePeriod는 송신 중이 아닌 ACTIVE에서만 다음 주기를 연다)
+                // 이미 반영된 승인이다. sync가 읽은 뒤에 renew가 끼어들면 정상적으로 생긴다. 재시도 승인이 생기면 이 전제를 다시 봐야 한다.
+                chargeKey.subscriptionId == id && chargeKey.cycleNo < cycleNo && fact is PaymentFact.Approved -> ReflectResult.NoChange
+
+                fact is PaymentFact.Approved -> ReflectResult.StaleApproval
+
+                else -> ReflectResult.StaleKey
+            }
         }
         return when (status) {
             SubscriptionStatus.PENDING -> reflectFirstPayment(fact)

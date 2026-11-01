@@ -269,6 +269,24 @@ class SubscriptionWriterTest(
     }
 
     @Test
+    fun `지난 주기의 승인을 다시 확인해도 로그를 남기지 않고 아무것도 바꾸지 않는다`() {
+        val id = createActive()
+        clock.set(cycle1End)
+        subscriptionWriter.closePeriod(id, 1)
+        subscriptionWriter.reflect(id, key(id, 2), PaymentFact.Approved(cycle1End))
+        val before = reload(id).version
+
+        LogCapture(SubscriptionWriter::class.java).use { logs ->
+            val result = subscriptionWriter.reflect(id, key(id, 1), PaymentFact.Approved(start))
+
+            assertEquals(ReflectResult.NoChange, result)
+            assertEquals(emptyList(), logs.messages(Level.ERROR))
+            assertEquals(emptyList(), logs.messages(Level.WARN))
+        }
+        assertEquals(before, reload(id).version)
+    }
+
+    @Test
     fun `현재 시도가 아닌 키의 승인은 SUBSCRIPTION_STALE_APPROVAL ERROR를 남기고 아무것도 바꾸지 않는다`() {
         val id = createActive()
         val before = reload(id).version

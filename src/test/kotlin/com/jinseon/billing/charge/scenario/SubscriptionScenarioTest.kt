@@ -30,6 +30,8 @@ import com.jinseon.billing.support.LogCapture
 import com.jinseon.billing.support.MutableClock
 import com.jinseon.billing.support.MutableClockConfiguration
 import com.jinseon.billing.support.warmUpMockPg
+import io.mockk.every
+import io.mockk.mockk
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
@@ -449,6 +451,32 @@ class SubscriptionScenarioTest(
             assertEquals(2, saved.cycleNo)
             assertEquals(cycle2End, saved.periodEnd)
             assertNull(saved.pendingChargeKey)
+            assertEquals(2, paymentRepository.count())
+            assertEquals(2, ledger.totalApprovedCount())
+        }
+
+        @Test
+        fun `sync가 구독을 읽은 직후 renew가 끼어들어도 정상 승인을 이중 청구 신호로 오탐하지 않는다`() {
+            val id = subscribeActive()
+            clock.set(cycle1End)
+            // sync가 구독을 읽은 직후(아직 주기 1) 갱신이 끼어드는 순간을 만든다. 끼어든 갱신은 진짜 서비스로 끝까지 실행된다.
+            val interleaved = mockk<SubscriptionRepository>()
+            every { interleaved.findById(id) } answers {
+                val read = subscriptionRepository.findById(id)
+                service.renew(id, 1)
+                read
+            }
+            val racing = SubscriptionChargeService(interleaved, subscriptionWriter, paymentRepository, chargeService)
+
+            LogCapture(SubscriptionWriter::class.java).use { logs ->
+                // 오래된 주기 1의 승인을 받아 반영하려 하지만, 그 승인은 이미 반영된 것이다.
+                assertEquals(ReflectResult.NoChange, racing.sync(id))
+                assertEquals(emptyList(), logs.messages(Level.ERROR), "정상 운영인데 ERROR 로그가 남았다")
+            }
+            val saved = subscription(id)
+            assertEquals(SubscriptionStatus.ACTIVE, saved.status)
+            assertEquals(2, saved.cycleNo)
+            assertEquals(cycle2End, saved.periodEnd)
             assertEquals(2, paymentRepository.count())
             assertEquals(2, ledger.totalApprovedCount())
         }

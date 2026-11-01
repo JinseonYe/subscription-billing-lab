@@ -290,6 +290,40 @@ class SubscriptionTest {
     }
 
     @Test
+    fun `지난 주기의 승인은 이미 반영된 것이라 어느 상태에서도 아무것도 바꾸지 않고 NoChange다`() {
+        // 주기 2 이상인 상태들. 주기가 넘어가려면 이전 주기의 승인이 먼저 반영되어야 하므로 주기 1의 승인은 이미 반영된 것이다.
+        val pastCycleStates =
+            listOf(
+                renewing(),
+                renewingWithCancelReservation(),
+                pastDue(),
+                canceledByRenewalDecline(),
+                canceledFromPastDue(),
+            )
+
+        for (subscription in pastCycleStates) {
+            val before = subscription.snapshot()
+
+            val result = subscription.reflect(key(1), PaymentFact.Approved(anchor))
+
+            assertEquals(ReflectResult.NoChange, result, "${subscription.status}")
+            assertEquals(before, subscription.snapshot(), "${subscription.status}")
+        }
+    }
+
+    @Test
+    fun `지난 주기의 키라도 승인이 아니면 StaleKey이고 다른 구독의 키는 승인이어도 StaleApproval이다`() {
+        val subscription = renewing()
+        val before = subscription.snapshot()
+
+        assertEquals(ReflectResult.StaleKey, subscription.reflect(key(1), PaymentFact.Declined))
+        assertEquals(ReflectResult.StaleKey, subscription.reflect(key(1), PaymentFact.Pending))
+        assertEquals(ReflectResult.StaleKey, subscription.reflect(key(1), PaymentFact.NoPayment))
+        assertEquals(ReflectResult.StaleApproval, subscription.reflect(SubscriptionChargeKey(ID + 1, 1, 1), PaymentFact.Approved(anchor)))
+        assertEquals(before, subscription.snapshot())
+    }
+
+    @Test
     fun `첫 시도를 열면 C1-A1 키가 송신 중이고 상태는 PENDING이다`() {
         val subscription = pending()
 
