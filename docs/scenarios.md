@@ -11,8 +11,8 @@
   - 결제사 원장 기준 실제 청구 횟수 (1을 넘으면 이중 청구)
 - 시계는 테스트가 직접 조정한다. 확정 잡은 5분 이상 지난 결제만 보므로 확정 잡을 돌리기 전에 시계를 6분 앞당긴다.
 - 타임아웃은 클라이언트의 read-timeout을 500ms로 줄이고 Mock PG가 1.5초 늦게 응답하게 해서 재현한다.
-- 구독 기능이 아직 없어서 구독 상태는 확인하지 않는다.
-- 2026-10-31 기준 전체 테스트 163개가 통과한다.
+- 이 문서의 위쪽 표(`ChargeScenarioTest`)는 구독 없이 결제 하나만 본다. 구독과 결제가 어긋나는 시나리오는 아래 "구독 시나리오"(`SubscriptionScenarioTest`)에 있다.
+- 2026-11-01 기준 전체 테스트 357개가 통과한다.
 
 표에서 승인, 조회, 청구는 각각 결제사에 보낸 승인 요청 횟수, 조회 횟수, 결제사 원장 기준 실제 청구 횟수다.
 
@@ -55,9 +55,55 @@
 | 트랜잭션 안에서 `charge()` 호출 | 결제사를 부르기 전에 막힌다. 결제 기록도 청구도 남지 않는다 | 트랜잭션 안에서 호출하는 경우, `트랜잭션 안에서 charge를 부르면 결제사를 부르기 전에 막히고 결제 기록도 남지 않는다` |
 | 트랜잭션 안에서 확정 잡 호출 | 결제사를 조회하기 전에 막힌다. 결제 상태는 그대로다 | 트랜잭션 안에서 호출하는 경우, `트랜잭션 안에서 확정 잡을 부르면 결제사를 조회하기 전에 막힌다` |
 
+## 구독 시나리오
+
+구독 상태와 결제가 어긋나는 경로를 닫았는지 확인한다. 번호(S1 등)는 설계 토론의 시나리오 번호다. 설계는 `docs/decisions/0002-subscription-state-machine.md`에 있다.
+
+### 확인 방법
+
+- 위치는 `src/test/kotlin/com/jinseon/billing/charge/scenario/SubscriptionScenarioTest.kt`다. 진짜 `SubscriptionChargeService`가 진짜 MySQL(Testcontainers)과 진짜 HTTP로 호출하는 Mock PG를 쓴다. Mock PG는 바꾸지 않았다.
+- Mock 시나리오는 고객별로 지정하고 주문번호의 첫 요청에만 적용된다. 첫 결제와 갱신은 주문번호가 다르므로, 결제 사이에 시나리오를 다시 지정해서 결과를 다르게 만든다.
+- 각 시나리오에서 구독 상태, 결제 상태, 결제사 승인과 조회 횟수, 결제사 원장 기준 실제 청구 횟수, 이용 기한(`accessUntil`)을 단언한다.
+- 시계는 테스트가 직접 조정한다. 앵커는 서울 시각 2026-01-01 09:00(UTC 00:00)이고, 주기 1은 2월 1일 09:00까지, 주기 2는 3월 1일 09:00까지다.
+- 동시성 테스트는 `@Version` 충돌 예외를 정상으로 보고 허용한다. 대신 끝난 뒤 DB 상태의 불변식(해지된 구독에 갱신 청구가 없다, 청구는 한 번뿐이다)을 단언한다. 충돌로 실패한 쪽은 호출자가 다시 시도하고, 끝나지 않은 결제는 `sync`가 이어서 완료한다.
+- Mock PG는 거절 뒤 승인을 재현하지 못한다. "늦게 도착한 승인"은 `PaymentWriter.applyResult`를 직접 불러 흉내 낸다(S3와 PAST_DUE 시나리오).
+- 이번 범위에서 제외한 시나리오: S10(한 주기에 승인 2건), S11, S12(재시도 진행 중 해지)는 재시도 송신이 필요해서 MVP 4에서 한다.
+
+### 시나리오
+
+| 번호 | 시나리오 | Mock 설정 | 기대 결과 | 테스트 위치 (SubscriptionScenarioTest) |
+|---|---|---|---|---|
+| S1 | 첫 결제가 UNKNOWN이면 확정 잡이 확정한 뒤 반영한다 | `TIMEOUT_AFTER_APPROVE` | 호출 직후 구독 `PENDING`, 결제 `UNKNOWN`, 이용 불가. 확정 잡과 `sync` 뒤 `ACTIVE`, 앵커는 승인 시각, 이용 기한은 주기 끝. 승인 1, 조회 1, 청구 1 | 첫 결제가 확정되지 않는 경우, `S1 …` |
+| S2 | 첫 결제가 UNKNOWN인 동안 해지한다 | `TIMEOUT_AFTER_APPROVE` | 해지는 요청만 기록되고 `PENDING`을 유지한다. 승인되면 `ACTIVE`이고 해지 예약이 남는다. 청구 1 | 첫 결제가 확정되지 않는 경우, `S2 …` |
+| S9 | 첫 결제가 24시간 넘게 미확정이다 | `IN_PROGRESS_THEN_DONE` | `PENDING` 유지, `RESOLVE_STUCK` ERROR 1건. 해지는 요청만 기록되고 같은 고객이 다시 신청해도 새 구독이 생기지 않는다. 결제사가 끝내면 `ACTIVE` + 해지 예약 | 첫 결제가 확정되지 않는 경우, `S9 …` |
+| 추가 | 첫 결제가 거절된다 | `DECLINED` | 구독 `CANCELED`(`FIRST_PAYMENT_DECLINED`), 결제 `FAILED`, 이용 불가. 승인 1, 조회 0, 청구 0 | 첫 결제가 거절되는 경우, `첫 결제가 거절되면 …` |
+| S3 | 해지된 구독의 결제가 뒤늦게 승인된다 | `DECLINED` 뒤 `applyResult`로 승인 | `sync`가 `CHARGED_AFTER_CANCEL` ERROR를 정확히 1건 남기고 구독은 `CANCELED`를 유지한다 | 첫 결제가 거절되는 경우, `S3 …` |
+| S4 | 같은 고객이 순서대로 두 번 신청한다 | `APPROVE_OK` | 구독 1, 결제 1, 청구 1. 두 번째는 `Existing` | 같은 고객이 여러 번 신청하는 경우, `S4 … 순서대로 …` |
+| S4 | 같은 고객이 동시에 신청한다 (6개 스레드) | `APPROVE_OK` | 구독 1, 결제 1, 청구 1. 모든 요청이 같은 구독을 가리킨다. 충돌로 실패한 요청이 있어도 같은 호출을 다시 하면 `Existing` | 같은 고객이 여러 번 신청하는 경우, `S4 … 동시에 …` |
+| S4 | 신청 내용이 다르다 | `APPROVE_OK` | `Conflict(["amount"])`. 구독, 결제, 청구가 늘지 않는다 | 같은 고객이 여러 번 신청하는 경우, `S4 … Conflict …` |
+| S4 | 해지된 뒤 같은 고객이 다시 신청한다 | `DECLINED` 뒤 `APPROVE_OK` | 새 구독이 만들어진다. 옛 구독은 `CANCELED` 그대로 | 같은 고객이 여러 번 신청하는 경우, `S4 … 새 구독 …` |
+| S5 | 갱신일에 해지가 먼저 커밋된다 | `APPROVE_OK` | 갱신이 시작되지 않고 `CANCELED`(`USER_CANCELED`). 청구 1. 해지된 구독을 `sync`해도 해지 후 승인으로 오탐하지 않는다(ERROR 없음) | 갱신일의 경합, `S5 해지가 먼저 …` |
+| S5 | 갱신이 먼저 커밋되고 해지가 온다 | `APPROVE_OK` | 해지는 예약으로 기록된다. 갱신 결제 승인 뒤에도 예약이 남아 새 기간 끝에 `CANCELED`. 청구 2 | 갱신일의 경합, `S5 갱신이 먼저 …` |
+| S5 | 해지와 갱신 시작이 동시에 일어난다 (10번 반복) | `APPROVE_OK` | 충돌로 실패한 쪽을 다시 시도하고 `sync`한 뒤, `CANCELED`이면 갱신 결제가 없고 `ACTIVE`이면 해지 예약이 남고 갱신 결제는 승인 1건이다. ERROR 로그 없음 | 갱신일의 경합, `S5 해지와 갱신 시작이 동시에 …` |
+| S15 | 같은 구독의 갱신을 동시에 시작한다 (6개 스레드) | `APPROVE_OK` | `C2-A1`은 한 번, 결제 2건(첫 결제와 갱신), 청구 2. `Started`는 많아야 하나 | 갱신일의 경합, `S15 …` |
+| 추가 | 이미 끝난 갱신을 같은 주기 번호나 낡은 주기 번호로 다시 부른다 | `APPROVE_OK` | `AlreadyRenewed`. 주기 2의 기간이 끝난 시각에 주기 번호 1로 불려도 다음 달 청구가 나가지 않는다 | 갱신일의 경합, `이미 끝난 갱신은 …` |
+| S6 | 갱신 시작을 커밋하고 결제를 부르기 전에 죽었다 (결제 행 없음) | `APPROVE_OK` | `sync`가 같은 키로 결제를 완료하고 `ACTIVE`. 결제는 구독에 저장된 금액으로 요청된다(S14). 승인 1, 청구 1 | 서버가 중간에 죽은 경우, `S6 갱신 시작을 커밋하고 …` |
+| S6 | 갱신 결제 기록만 커밋하고 죽었다 (`REQUESTED`) | `APPROVE_OK` | `sync`는 결제를 부르지 않는다(`NoChange`). 확정 잡이 조회 후 재전송해 승인하고 다시 `sync`하면 `ACTIVE`. 승인 1, 조회 1, 청구 1 | 서버가 중간에 죽은 경우, `S6 갱신 결제 기록만 …` |
+| S7 | 결제 트랜잭션은 커밋됐는데 구독 반영 전에 죽었다 | `APPROVE_OK` | `sync`가 `Applied`로 반영하고, 다시 불러도 `NoChange`. 승인 1, 청구 1 | 서버가 중간에 죽은 경우, `S7 …` |
+| S8 | 갱신 결제가 UNKNOWN이다 | `TIMEOUT_AFTER_APPROVE` | `ACTIVE`를 유지하고 기간은 연장되지 않는다. 이용 기한은 `period_end + 24시간`. 확정 잡과 `sync` 뒤 기간이 연장되고 청구 1 | 갱신 결제가 확정되지 않거나 거절되는 경우, `S8 …` |
+| 추가 | 갱신 결제가 거절된다 | `DECLINED` | `PAST_DUE`, `retry_count` 0, 첫 재시도 시각은 `period_end + 1일`, 이용 기한은 `period_end + 7일`. 결제 `FAILED`, 청구 0. 이 상태에서 해지하면 바로 `CANCELED` | 갱신 결제가 확정되지 않거나 거절되는 경우, `갱신 결제가 거절되면 …` |
+| 추가 | 갱신 송신 중에 해지 요청이 있었고 갱신이 거절된다 | `DECLINED` | `PAST_DUE`를 거치지 않고 `CANCELED`(`USER_CANCELED`) | 갱신 결제가 확정되지 않거나 거절되는 경우, `갱신이 송신 중일 때 해지 요청이 …` |
+| 추가 | `PAST_DUE`인 구독의 갱신 시도가 뒤늦게 승인된다 | `DECLINED` 뒤 `applyResult`로 승인 | 복구하지 않는다(ADR 0002 알려진 한계 8번). 구독은 `PAST_DUE`를 유지하고 `SUBSCRIPTION_LATE_APPROVAL_IN_PAST_DUE` ERROR 1건 | 갱신 결제가 확정되지 않거나 거절되는 경우, `PAST_DUE인 구독의 … 뒤늦게 승인되면 …` |
+| S13 | 송신 중인 구독을 해지한다 (결제사에 기록이 없는 요청 유실) | `TIMEOUT_BEFORE_APPROVE` | 해지는 요청만 기록되고 `CANCELED`가 되지 않는다. 확정 잡이 같은 주문번호로 재전송해 승인되면 `ACTIVE` + 해지 예약. 기간이 끝나면 `CANCELED`이고 그 뒤 청구는 없다. 승인 2, 조회 1, 청구 1 | 해지와 송신이 겹치는 경우, `S13 …` |
+| 추가 | 트랜잭션 안에서 `subscribe`, `renew`, `sync`를 부른다 | `TIMEOUT_AFTER_APPROVE` (`sync`) | 막힌다. 구독도 결제도 청구도 남지 않고 구독은 그대로다 | 트랜잭션 안에서 호출하는 경우 (3개) |
+
 ## 함께 확인하는 테스트
 
 - `PaymentWriterTest`: 결과 반영 규칙 16칸, 같은 chargeKey 중복 차단, 두 트랜잭션이 같은 결제를 바꿀 때 낙관적 잠금, 긴 거절 메시지 자르기
 - `PaymentStatusResolverTest`: 확정 대상 조회 조건, 한 건이 실패해도 다음 건 계속 처리, 재전송 결과(거절, 409) 반영, 24시간 기준 ERROR 로그
 - `MockPgLedgerTest`, `MockPgControllerTest`: Mock PG 자체가 토스처럼 동작하는지 (같은 키 재요청은 처음 응답 재생, 처리 중이면 409, 동시 요청에도 승인은 한 번)
-- `ArchitectureTest`: 패키지 경계와 mock-pg 프로필 규칙
+- `ArchitectureTest`: 패키지 경계와 mock-pg 프로필 규칙. subscription은 payment, charge, pg를 모르고, charge 패키지에는 `@Transactional`이 없다
+- `SubscriptionTest`: 구독 상태×결제 사실 반영 규칙 40칸, 현재 시도가 아닌 키의 결과는 반영하지 않기, 해지와 기간 종료 규칙
+- `SubscriptionWriterTest`: 신청과 첫 시도 열기가 한 트랜잭션인지, `@Version` 충돌(flush 시점과 커밋 시점), 충돌 로그 코드
+- `SubscriptionChargeServiceTest`: 구독 TX → 결제 → `sync` 호출 순서와 트랜잭션 가드
+- `SubscriptionRepositoryTest`: V2 스키마의 CHECK 두 개와 고객당 live 구독 UNIQUE

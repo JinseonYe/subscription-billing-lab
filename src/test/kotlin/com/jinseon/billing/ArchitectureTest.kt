@@ -10,8 +10,10 @@ import com.tngtech.archunit.lang.ConditionEvents
 import com.tngtech.archunit.lang.SimpleConditionEvent
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes
 import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses
+import com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noMethods
 import org.springframework.context.annotation.Profile
 import org.springframework.stereotype.Component
+import org.springframework.transaction.annotation.Transactional
 
 // CLAUDE.md의 "아키텍처 규칙"을 테스트로 강제한다. 테스트 코드는 검사 대상에서 뺀다(테스트는 mockpg를 써도 된다).
 // ktlint는 @Test가 있는 파일에서만 백틱 함수명을 허용한다. ArchUnit은 @ArchTest를 쓰므로 이 클래스만 예외로 둔다.
@@ -52,13 +54,13 @@ class ArchitectureTest {
     }
 
     @ArchTest
-    fun `pg는 payment, charge, mockpg를 알지 못한다`(classes: JavaClasses) {
+    fun `pg는 payment, subscription, charge, mockpg를 알지 못한다`(classes: JavaClasses) {
         noClasses()
             .that()
             .resideInAPackage("..pg..")
             .should()
             .dependOnClassesThat()
-            .resideInAnyPackage("..payment..", "..charge..", "..mockpg..")
+            .resideInAnyPackage("..payment..", "..subscription..", "..charge..", "..mockpg..")
             .check(classes)
     }
 
@@ -73,7 +75,7 @@ class ArchitectureTest {
             .check(classes)
     }
 
-    // 아직 subscription 패키지가 없어서 검사 대상이 비어 있다. 생기는 순간부터 이 규칙이 적용된다.
+    // 둘을 엮는 일은 charge가 한다.
     @ArchTest
     fun `subscription과 payment는 서로를 직접 참조하지 않는다`(classes: JavaClasses) {
         noClasses()
@@ -82,7 +84,6 @@ class ArchitectureTest {
             .should()
             .dependOnClassesThat()
             .resideInAPackage("..payment..")
-            .allowEmptyShould(true)
             .check(classes)
         noClasses()
             .that()
@@ -90,7 +91,35 @@ class ArchitectureTest {
             .should()
             .dependOnClassesThat()
             .resideInAPackage("..subscription..")
-            .allowEmptyShould(true)
+            .check(classes)
+    }
+
+    @ArchTest
+    fun `subscription은 charge와 pg를 알지 못한다`(classes: JavaClasses) {
+        noClasses()
+            .that()
+            .resideInAPackage("..subscription..")
+            .should()
+            .dependOnClassesThat()
+            .resideInAnyPackage("..charge..", "..pg..")
+            .check(classes)
+    }
+
+    // 결제사 호출이 트랜잭션 안에 들어가면 안 된다. 트랜잭션은 PaymentWriter와 SubscriptionWriter가 맡는다(ADR 0001 원칙 7, ADR 0002).
+    @ArchTest
+    fun `charge 패키지에는 트랜잭션을 붙이지 않는다`(classes: JavaClasses) {
+        noClasses()
+            .that()
+            .resideInAPackage("..charge..")
+            .should()
+            .beAnnotatedWith(Transactional::class.java)
+            .check(classes)
+        noMethods()
+            .that()
+            .areDeclaredInClassesThat()
+            .resideInAPackage("..charge..")
+            .should()
+            .beAnnotatedWith(Transactional::class.java)
             .check(classes)
     }
 }
